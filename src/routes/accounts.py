@@ -26,12 +26,13 @@ from security.token_manager import JWTAuthManager
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserRead)
+@router.post("/register", response_model=UserRead, status_code=201)
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
+    # перевірка чи такий емейл вже зареєстрований
     result = await db.execute(select(UserModel).where(UserModel.email == user.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=409, detail=f"A user with this email {user.email} already exists.")
-
+    # пошук групи, щоб передати в якості аргументу саме об*єкт групи який відповідає Enum-опції
     group_result = await db.execute(select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER))
     user_group = group_result.scalar_one()
     new_user = UserModel(
@@ -39,10 +40,12 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
         is_active=True,
         group=user_group,
     )
+    # Пароль хешується завдяки setter який вже реалізовано у UserModel
     new_user.password = user.password
     db.add(new_user)
     await db.flush()
-
+    # Щоб отримати токен треба спочатку зафлюшити нового юзера і таким чином отримати його ID
+    # А вже тоді передати ід в готовий клас який нам згенерує токен
     activation_token = ActivationTokenModel(user=new_user.id)
     db.add(activation_token)
 
