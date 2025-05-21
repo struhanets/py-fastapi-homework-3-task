@@ -18,7 +18,7 @@ from database import (
     RefreshTokenModel,
 )
 from exceptions import BaseSecurityError
-from schemas.accounts import UserCreate, UserRead
+from schemas.accounts import UserCreate, UserRead, ActivationTokenRequest, User
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
 from security.token_manager import JWTAuthManager
@@ -26,14 +26,19 @@ from security.token_manager import JWTAuthManager
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserRead, status_code=201)
+@router.post("/register/", response_model=UserRead, status_code=201)
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     # перевірка чи такий емейл вже зареєстрований
     result = await db.execute(select(UserModel).where(UserModel.email == user.email))
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail=f"A user with this email {user.email} already exists.")
+        raise HTTPException(
+            status_code=409,
+            detail=f"A user with this email {user.email} already exists.",
+        )
     # пошук групи, щоб передати в якості аргументу саме об*єкт групи який відповідає Enum-опції
-    group_result = await db.execute(select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER))
+    group_result = await db.execute(
+        select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+    )
     user_group = group_result.scalar_one()
     new_user = UserModel(
         email=user.email,
@@ -52,3 +57,52 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
     return new_user
+
+
+@router.post("/activate/")
+async def activate_user(
+    token: ActivationTokenRequest, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(select(UserModel).where(UserModel.email == token.email))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired activation token"
+        )
+    if user.is_active:
+        raise HTTPException(status_code=400, detail="User account is already active.")
+
+    activation_token = user.activation_token
+
+    if not activation_token or activation_token.token != token.token:
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired activation token"
+        )
+
+    if user.activation_token.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(400, detail="Invalid or expired activation token.")
+
+    user.is_active = True
+    await db.delete(user.activation_token)
+    await db.commit()
+    return {"message": "User account activated successfully."}
+
+
+@router.post("/password-reset/request/")
+async def password_reset_request(user: User, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(UserModel).where(UserModel.email == user.email))
+
+    db_user = result.scalar_one_or_none()
+
+    if not db_user or not db_user.is_active:
+        return {"message": "If you are registered, you will receive an email with instructions."}
+
+    if db_user.password_reset_token:
+        await db.delete(db_user.password_reset_token)
+
+    new_password_reset_token = PasswordResetTokenModel(user_id=db_user.id)
+    db.add(new_password_reset_token)
+    await db.commit()
+    return {"message": "If you are registered, you will receive an email with instructions."}
+
+
