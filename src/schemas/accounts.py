@@ -15,3 +15,7 @@ class UserRead(User):
     id: int
 
 
+class ActivationTokenRequest(BaseModel):
+    email: EmailStr
+    token: str
+
