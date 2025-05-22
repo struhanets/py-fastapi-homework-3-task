@@ -26,7 +26,7 @@ from security.token_manager import JWTAuthManager
 router = APIRouter()
 
 
-@router.post("/register/", response_model=UserRead, status_code=201)
+@router.post("/register/", status_code=201)
 async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     # перевірка чи такий емейл вже зареєстрований
     result = await db.execute(select(UserModel).where(UserModel.email == user.email))
@@ -51,12 +51,16 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.flush()
     # Щоб отримати токен треба спочатку зафлюшити нового юзера і таким чином отримати його ID
     # А вже тоді передати ід в готовий клас який нам згенерує токен
-    activation_token = ActivationTokenModel(user=new_user.id)
+    activation_token = ActivationTokenModel(user_id=new_user.id)
     db.add(activation_token)
-
+    await db.flush()
     await db.commit()
     await db.refresh(new_user)
-    return new_user
+    return {
+        "id": new_user.id,
+        "email": new_user.email,
+        "activation_token": activation_token.token,
+    }
 
 
 @router.post("/activate/")
