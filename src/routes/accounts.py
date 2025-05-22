@@ -65,29 +65,33 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
 
 @router.post("/activate/")
 async def activate_user(
-    token: ActivationTokenRequest, db: AsyncSession = Depends(get_db)
+    data: PasswordResetRequestSchema, db: AsyncSession = Depends(get_db)
 ):
-    result = await db.execute(select(UserModel).where(UserModel.email == token.email))
-    user = result.scalar_one_or_none()
-    if not user:
+    # шукаємо акаунт в БД відповідно до емейлу
+    result = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    db_user = result.scalar_one_or_none()
+    # перша перевірка, чи існує взагалі акк
+    if not db_user:
         raise HTTPException(
             status_code=400, detail="Invalid or expired activation token"
         )
-    if user.is_active:
+    # 2 перевірка чи акк активний
+    if db_user.is_active:
         raise HTTPException(status_code=400, detail="User account is already active.")
-
-    activation_token = user.activation_token
-
-    if not activation_token or activation_token.token != token.token:
+    # якщо все ок, то витягуємо токен користувача
+    activation_token = db_user.activation_token
+    print(activation_token)
+    # 3 перевірка чи токени збігаються з тим що ми взяли у користувача і з тим який введений в формі
+    if not activation_token or activation_token.token != data.token:
         raise HTTPException(
             status_code=400, detail="Invalid or expired activation token"
         )
+    #
+    # if user.activation_token.expires_at < datetime.now(timezone.utc):
+    #     raise HTTPException(400, detail="Invalid or expired activation token.")
 
-    if user.activation_token.expires_at < datetime.now(timezone.utc):
-        raise HTTPException(400, detail="Invalid or expired activation token.")
-
-    user.is_active = True
-    await db.delete(user.activation_token)
+    db_user.is_active = True
+    await db.delete(db_user.activation_token)
     await db.commit()
     return {"message": "User account activated successfully."}
 
