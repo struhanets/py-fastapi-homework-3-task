@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from config import get_jwt_auth_manager, get_settings, BaseAppSettings
 from database import (
@@ -18,7 +18,8 @@ from database import (
     RefreshTokenModel,
 )
 from exceptions import BaseSecurityError
-from schemas.accounts import UserCreate, UserRead, ActivationTokenRequest, User
+from schemas.accounts import UserCreate, UserRead, ActivationTokenRequest, User, PasswordResetCompleteRequestSchema, \
+    PasswordResetRequestSchema
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
 from security.token_manager import JWTAuthManager
@@ -97,20 +98,33 @@ async def activate_user(
 
 
 @router.post("/password-reset/request/")
-async def password_reset_request(user: User, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(UserModel).where(UserModel.email == user.email))
+async def password_reset_request(email: str, db: AsyncSession = Depends(get_db)):
+    # знову пошук юзера в БД
+    result = await db.execute(
+        select(UserModel)
+        .options(selectinload(UserModel.password_reset_token))
+        .where(UserModel.email == email)
+    )
 
     db_user = result.scalar_one_or_none()
 
+    # перевірка на існування юзера і на статус
     if not db_user or not db_user.is_active:
-        return {"message": "If you are registered, you will receive an email with instructions."}
-
+        return {
+            "message": "Not If you are registered, you will receive an email with instructions."
+        }
+    # перевірка на існування будь яких русет-токенів якщо є, то видаляємо
     if db_user.password_reset_token:
         await db.delete(db_user.password_reset_token)
-
+        await db.commit()
+    # створюємо новий ресет-токен і добавляємо в БД
     new_password_reset_token = PasswordResetTokenModel(user_id=db_user.id)
     db.add(new_password_reset_token)
     await db.commit()
-    return {"message": "If you are registered, you will receive an email with instructions."}
+    return {
+        "message": "If you are registered, you will receive an email with instructions.",
+        "token": new_password_reset_token
+    }
+
 
 
