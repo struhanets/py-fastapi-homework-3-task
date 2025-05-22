@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import cast
 
 from fastapi import APIRouter, Depends, status, HTTPException
@@ -18,8 +18,16 @@ from database import (
     RefreshTokenModel,
 )
 from exceptions import BaseSecurityError
-from schemas.accounts import UserCreate, UserRead, ActivationTokenRequest, User, PasswordResetCompleteRequestSchema, \
-    PasswordResetRequestSchema
+from schemas.accounts import (
+    UserCreate,
+    UserRead,
+    ActivationTokenRequest,
+    User,
+    PasswordResetCompleteRequestSchema,
+    PasswordResetRequestSchema,
+    UserLoginResponseSchema,
+    UserLoginRequestSchema,
+)
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
 from security.token_manager import JWTAuthManager
@@ -123,7 +131,7 @@ async def password_reset_request(email: str, db: AsyncSession = Depends(get_db))
     await db.commit()
     return {
         "message": "If you are registered, you will receive an email with instructions.",
-        "token": new_password_reset_token
+        "token": new_password_reset_token,
     }
 
 
@@ -168,4 +176,46 @@ async def reset_password_complete(
         )
 
     return {"message": "Password reset successfully.", "new_info": db_user}
+
+
+@router.post("/login/", response_model=UserLoginResponseSchema)
+async def login(
+        data: UserLoginRequestSchema,
+        db: AsyncSession = Depends(get_db),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
+        settings: BaseAppSettings = Depends(get_settings)
+):
+    result = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    db_user = result.scalar_one_or_none()
+
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    if not db_user.verify_password(data.password):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    if not db_user.is_active:
+        raise HTTPException(status_code=403, detail="User account is not activated.")
+
+    access_token = jwt_manager.create_access_token(data)
+    refresh_token = jwt_manager.create_refresh_token(data)
+
+    refresh_token_obj = RefreshTokenModel.create(
+        user_id=db_user.id,
+        days_valid=settings.LOGIN_TIME_DAYS,
+        token=refresh_token
+    )
+    try:
+        db.add(refresh_token_obj)
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=500, detail="An error occurred while processing the request.")
+
+    return UserLoginResponseSchema(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type="bearer"
+    )
+
+
 
