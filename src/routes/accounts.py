@@ -127,4 +127,45 @@ async def password_reset_request(email: str, db: AsyncSession = Depends(get_db))
     }
 
 
+@router.post("/reset-password/complete/")
+async def reset_password_complete(
+    data: PasswordResetCompleteRequestSchema, db: AsyncSession = Depends(get_db)
+):
+    # знову пошук юзера в БД
+    result = await db.execute(
+        select(UserModel)
+        .options(selectinload(UserModel.password_reset_token))
+        .where(UserModel.email == data.email)
+    )
+
+    db_user = result.scalar_one_or_none()
+    # перевірка на існування юзера і на статус
+    if not db_user or not db_user.is_active:
+        raise HTTPException(status_code=400, detail="Invalid email or token")
+
+    token_obj = db_user.password_reset_token
+    if (
+        not token_obj
+        or token_obj.token != data.token
+        or token_obj.expires_at < datetime.now(timezone.utc)
+    ):
+        if token_obj:
+            await db.delete(db_user.password_reset_token)
+            await db.commit()
+        raise HTTPException(status_code=400, detail="Invalid email or token")
+
+    db_user.password = hash_password(data.password)
+    try:
+        db.add(db_user)
+        await db.delete(token_obj)
+        await db.commit()
+        await db.refresh(db_user)
+    except Exception:
+        await db.rollback()
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while resetting the password.",
+        )
+
+    return {"message": "Password reset successfully.", "new_info": db_user}
 
