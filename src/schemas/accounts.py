@@ -11,29 +11,35 @@ class UserRegistrationRequestSchema(BaseModel):
     email: EmailStr
     password: str
 
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, validation_field: str):
+        return accounts_validators.validate_password_strength(validation_field)
+
 
 class UserRegistrationResponseSchema(BaseModel):
     id: int
     email: EmailStr
 
 
-class ActivationTokenRequest(BaseModel):
+class UserActivationRequestSchema(BaseModel):
     email: EmailStr
     token: str
 
 
 # UserRegistrationRequestSchema = UserCreate
 # UserRegistrationResponseSchema = UserRead
-UserActivationRequestSchema = ActivationTokenRequest
+# UserActivationRequestSchema = ActivationTokenRequest
 MessageResponseSchema = dict
 
 
 class PasswordResetRequestSchema(BaseModel):
     email: EmailStr
+
+
+class PasswordResetCompleteRequestSchema(BaseModel):
+    email: EmailStr
     token: str
-
-
-class PasswordResetCompleteRequestSchema(UserActivationRequestSchema):
     password: str
 
 
