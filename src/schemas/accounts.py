@@ -3,16 +3,18 @@ from pydantic import BaseModel, EmailStr, field_validator
 from database import accounts_validators
 
 
-class User(BaseModel):
+# class User(BaseModel):
+#     email: EmailStr
+#
+
+class UserRegistrationRequestSchema(BaseModel):
     email: EmailStr
-
-
-class UserCreate(User):
     password: str
 
 
-class UserRead(User):
+class UserRegistrationResponseSchema(BaseModel):
     id: int
+    email: EmailStr
 
 
 class ActivationTokenRequest(BaseModel):
@@ -20,8 +22,8 @@ class ActivationTokenRequest(BaseModel):
     token: str
 
 
-UserRegistrationRequestSchema = UserCreate
-UserRegistrationResponseSchema = UserRead
+# UserRegistrationRequestSchema = UserCreate
+# UserRegistrationResponseSchema = UserRead
 UserActivationRequestSchema = ActivationTokenRequest
 MessageResponseSchema = dict
 
@@ -47,8 +49,8 @@ class UserLoginRequestSchema(BaseModel):
 
 
 class TokenRefreshRequestSchema(BaseModel):
-    pass
+    refresh_token: str
 
 
 class TokenRefreshResponseSchema(BaseModel):
-    pass
+    access_token: str

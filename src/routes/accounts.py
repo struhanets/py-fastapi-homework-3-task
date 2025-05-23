@@ -19,14 +19,11 @@ from database import (
 )
 from exceptions import BaseSecurityError
 from schemas.accounts import (
-    UserCreate,
-    UserRead,
-    ActivationTokenRequest,
-    User,
     PasswordResetCompleteRequestSchema,
     PasswordResetRequestSchema,
     UserLoginResponseSchema,
-    UserLoginRequestSchema,
+    UserLoginRequestSchema, TokenRefreshResponseSchema, TokenRefreshRequestSchema, UserRegistrationRequestSchema,
+    UserRegistrationResponseSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
@@ -35,14 +32,14 @@ from security.token_manager import JWTAuthManager
 router = APIRouter()
 
 
-@router.post("/register/", status_code=201)
-async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
+@router.post("/register/", response_model=UserRegistrationResponseSchema, status_code=201)
+async def register_user(data: UserRegistrationRequestSchema, db: AsyncSession = Depends(get_db)):
     # перевірка чи такий емейл вже зареєстрований
-    result = await db.execute(select(UserModel).where(UserModel.email == user.email))
+    result = await db.execute(select(UserModel).where(UserModel.email == data.email))
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=409,
-            detail=f"A user with this email {user.email} already exists.",
+            detail=f"A user with this email {data.email} already exists.",
         )
     # пошук групи, щоб передати в якості аргументу саме об*єкт групи який відповідає Enum-опції
     group_result = await db.execute(
@@ -50,12 +47,13 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     )
     user_group = group_result.scalar_one()
     new_user = UserModel(
-        email=user.email,
-        is_active=True,
+        email=data.email,
+        is_active=False,
         group=user_group,
     )
     # Пароль хешується завдяки setter який вже реалізовано у UserModel
-    new_user.password = user.password
+    new_user.password = data.password
+
     db.add(new_user)
     await db.flush()
     # Щоб отримати токен треба спочатку зафлюшити нового юзера і таким чином отримати його ID
@@ -65,19 +63,24 @@ async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)):
     await db.flush()
     await db.commit()
     await db.refresh(new_user)
-    return {
-        "id": new_user.id,
-        "email": new_user.email,
-        "activation_token": activation_token.token,
-    }
+    return UserRegistrationResponseSchema(
+        id=new_user.id,
+        email=new_user.email
+    )
 
 
 @router.post("/activate/")
 async def activate_user(
-    data: PasswordResetRequestSchema, db: AsyncSession = Depends(get_db)
+        data: PasswordResetRequestSchema, db: AsyncSession = Depends(get_db)
 ):
     # шукаємо акаунт в БД відповідно до емейлу
-    result = await db.execute(select(UserModel).where(UserModel.email == data.email))
+    # опція selectinload працює як prefetch related
+    # опція joinedload працює як select related
+    result = await db.execute(
+        select(UserModel)
+        .options(joinedload(UserModel.activation_token))
+        .where(UserModel.email == data.email)
+    )
     db_user = result.scalar_one_or_none()
     # перша перевірка, чи існує взагалі акк
     if not db_user:
@@ -89,7 +92,7 @@ async def activate_user(
         raise HTTPException(status_code=400, detail="User account is already active.")
     # якщо все ок, то витягуємо токен користувача
     activation_token = db_user.activation_token
-    print(activation_token)
+
     # 3 перевірка чи токени збігаються з тим що ми взяли у користувача і з тим який введений в формі
     if not activation_token or activation_token.token != data.token:
         raise HTTPException(
@@ -137,12 +140,12 @@ async def password_reset_request(email: str, db: AsyncSession = Depends(get_db))
 
 @router.post("/reset-password/complete/")
 async def reset_password_complete(
-    data: PasswordResetCompleteRequestSchema, db: AsyncSession = Depends(get_db)
+        data: PasswordResetCompleteRequestSchema, db: AsyncSession = Depends(get_db)
 ):
     # знову пошук юзера в БД
     result = await db.execute(
         select(UserModel)
-        .options(selectinload(UserModel.password_reset_token))
+        .options(joinedload(UserModel.password_reset_token))
         .where(UserModel.email == data.email)
     )
 
@@ -153,16 +156,16 @@ async def reset_password_complete(
 
     token_obj = db_user.password_reset_token
     if (
-        not token_obj
-        or token_obj.token != data.token
-        or token_obj.expires_at < datetime.now(timezone.utc)
+            not token_obj
+            or token_obj.token != data.token
+            or token_obj.expires_at < datetime.now(timezone.utc)
     ):
         if token_obj:
             await db.delete(db_user.password_reset_token)
             await db.commit()
         raise HTTPException(status_code=400, detail="Invalid email or token")
 
-    db_user.password = hash_password(data.password)
+    db_user.password = data.password
     try:
         db.add(db_user)
         await db.delete(token_obj)
@@ -218,4 +221,33 @@ async def login(
     )
 
 
+@router.post("/refresh/", response_model=TokenRefreshResponseSchema)
+async def refresh_access_token(
+        data: TokenRefreshRequestSchema,
+        db: AsyncSession = Depends(get_db),
+        jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
 
+):
+    token_result = await db.execute(select(RefreshTokenModel).where(RefreshTokenModel.token == data.refresh_token))
+
+    refresh_token = token_result.scalar_one_or_none()
+    if not refresh_token:
+        raise HTTPException(status_code=401, detail="Refresh token not found.")
+
+    try:
+        decode_refresh_token = jwt_manager.decode_refresh_token(refresh_token.token)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST)
+
+    user_result = await db.execute(select(UserModel).where(UserModel.id == refresh_token.user_id))
+    db_user = user_result.scalar_one_or_none()
+
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if decode_refresh_token["user_id"] != refresh_token.user_id:
+        raise HTTPException(status_code=403, detail="Token user mismatch.")
+
+    access_token = jwt_manager.create_access_token(data={"user_id": db_user.id})
+
+    return TokenRefreshResponseSchema(access_token=access_token)
