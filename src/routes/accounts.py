@@ -241,6 +241,13 @@ async def refresh_access_token(
         db: AsyncSession = Depends(get_db),
         jwt_manager: JWTAuthManagerInterface = Depends(get_jwt_auth_manager),
 ):
+    try:
+        decode_refresh_token = jwt_manager.decode_refresh_token(data.refresh_token)
+    except TokenExpiredError:
+        raise HTTPException(status_code=400, detail="Token has expired.")
+    except InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Token has expired.")
+
     token_result = await db.execute(
         select(RefreshTokenModel).where(RefreshTokenModel.token == data.refresh_token)
     )
@@ -248,13 +255,6 @@ async def refresh_access_token(
     refresh_token = token_result.scalar_one_or_none()
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Refresh token not found.")
-
-    try:
-        decode_refresh_token = jwt_manager.decode_refresh_token(refresh_token.token)
-    except TokenExpiredError:
-        raise HTTPException(status_code=400, detail="Token has expired.")
-    except InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token.")
 
     user_result = await db.execute(
         select(UserModel).where(UserModel.id == refresh_token.user_id)
@@ -265,7 +265,7 @@ async def refresh_access_token(
         raise HTTPException(status_code=404, detail="User not found.")
 
     if decode_refresh_token["user_id"] != refresh_token.user_id:
-        raise HTTPException(status_code=403, detail="Token user mismatch.")
+        raise HTTPException(status_code=400, detail="Token has expired.")
 
     access_token = jwt_manager.create_access_token(data={"user_id": db_user.id})
 
