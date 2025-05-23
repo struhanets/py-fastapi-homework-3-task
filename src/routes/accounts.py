@@ -34,7 +34,6 @@ router = APIRouter()
 
 @router.post("/register/", response_model=UserRegistrationResponseSchema, status_code=201)
 async def register_user(data: UserRegistrationRequestSchema, db: AsyncSession = Depends(get_db)):
-    # перевірка чи такий емейл вже зареєстрований
     result = await db.execute(select(UserModel).where(UserModel.email == data.email))
     if result.scalar_one_or_none():
         raise HTTPException(
